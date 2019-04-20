@@ -62,65 +62,10 @@
 `define F32767  16'h46ff  // closest approx to 32767, actually 32640
 `define F32768  16'hc700  // -32768
 
-// module isDependent(dependent, curInst, nextInst);
-// 	output wire dependent;
-// 	input wire `WORD curInst, nextInst;
-// 	reg [4:0] dest1, dest2;
-// 	// 1) Get dest
-// 	always @(*) begin
-// 		// a) VLIW instructions
-// 		if(curInst `OPFIELD1 >= `VLIWMIN && curInst `OPFIELD1 <= `VLIWMAX) begin 
-// 			// a) Set the destination for op1
-// 			if(curInst `OPFIELD1 == `OPa2r || curInst `OPFIELD1 == `OPlf || curInst `OPFIELD1 == `OPli) begin
-// 				dest1 <= curInst `REGFIELD1; // Non-accumulator register destination
-// 			end else if(curInst `OPFIELD1 == `OPjr) begin
-// 				dest1 <= `PCDEST; // PC destination
-// 			end else if(curInst `OPFIELD1 == `OPst) begin
-// 				dest1 <= `NODEST; // No destination
-// 			end else begin
-// 				dest1 <= 0; // Accumulator desination
-// 			end
-// 			// b) Set destination for op2
-// 			if(curInst `OPFIELD2 == `OPa2r || curInst `OPFIELD2 == `OPlf || curInst `OPFIELD2 == `OPli) begin
-// 				dest2 <= curInst `REGFIELD2; // Non-accumulator register destination
-// 			end else if(curInst `OPFIELD2 == `OPjr) begin
-// 				dest2 <= `PCDEST; // PC destination
-// 			end else if(curInst `OPFIELD2 == `OPst) begin
-// 				dest2 <= `NODEST; // No destination
-// 			end else begin
-// 				dest2 <= 1; // Accumulator destination
-// 			end
-// 		end
-// 		// a) Non-VLIW instructions
-// 		if(curInst `OPFIELD1 >= `NONVLIWMIN && curInst `OPFIELD1 <= `NONVLIWMAX) begin 
-// 			dest2 <= `NODEST;
-// 			case(curInst `OPFIELD1)
-// 				`OPcf8: begin dest1 <= curInst `REGFIELD1; end
-// 				`OPci8: begin dest1 <= curInst `REGFIELD1; end 
-// 				`OPjp8: begin dest1 <= `PCDEST; end
-// 				`OPjz8: begin dest1 <= `PCDEST; end
-// 				`OPjnz8: begin dest1 <= `PCDEST; end
-// 				`OPsys: begin dest1 <= `HALT; end
-// 			endcase
-// 		end
-// 	end
-// 
-// 	// 2) Check if next instruction is dependent
-// 	always @(*) begin
-// 		// a) VLIW instructions
-// 		if(nextInst `OPFIELD1 >= `VLIWMIN && nextInst `OPFIELD1 <= `VLIWMAX) begin 
-// 			if (dest1 == 0 || dest2 == 1 || dest1 == nextInst `REGFIELD1 || dest1 == nextInst `REGFIELD2 ||
-// 			    dest2 == nextInst `REGFIELD1 || dest2 == nextInst `REGFIELD2) begin
-// 				dependent <= 1;
-// 			end else begin
-// 				dependent <= 0;
-// 			end
-// 		end
-// 		if(nextInst `OPFIELD1 >= `NONVLIWMIN && nextInst `OPFIELD1 <= `NONVLIWMAX) begin 
-// 			dependent <= 0;
-// 		end
-// 	end
-// endmodule
+// Memory definitions
+`define LINE [63:0]
+`define LINES [16383:0]
+`define MEMDELAY 4
 
 module processor(halt, reset, clk);
 	// Input / Output
@@ -152,9 +97,6 @@ module processor(halt, reset, clk);
 	reg [2:0] delay; 
 	wire dependent = 0;
 	wire `WORD curInst, nextInst;
-	// isDependent isDep(dependent, curInst, nextInst);
-	// assign curInst = mainmem[pc];
-	// assign nextInst = mainmem[pc+1];
 	always @(posedge clk) begin
 		// 1) Delay pipeline if there are dependencies
 		if(delay) begin
@@ -430,6 +372,60 @@ module testbench;
 		end
 		$finish;
 	end
+endmodule
+
+// ******************************************** Slow Mem ********************************************
+
+// Slow Memory Module
+// Created  by Henry Dietz, http://aggregate.org/hankd
+
+module slowmem64(mfc, rdata, addr, wdata, rnotw, strobe, clk);
+output reg mfc;
+output reg `LINE rdata;
+input `LINE addr, wdata;
+input rnotw, strobe, clk;
+reg [7:0] pend;
+reg `LINE raddr;
+reg `LINE m `LINES;
+
+initial begin
+  pend <= 0;
+  // put your memory initialization code here
+end
+
+always @(posedge clk) begin
+  if (strobe && rnotw) begin
+    // new read request
+    raddr <= addr;
+    pend <= `MEMDELAY;
+  end else begin
+    if (strobe && !rnotw) begin
+      // do write
+      m[addr] <= wdata;
+    end
+
+    // pending read?
+    if (pend) begin
+      // write satisfies pending read
+      if ((raddr == addr) && strobe && !rnotw) begin
+        rdata <= wdata;
+        mfc <= 1;
+        pend <= 0;
+      end else if (pend == 1) begin
+        // finally ready
+        rdata <= m[raddr];
+        mfc <= 1;
+        pend <= 0;
+      end else begin
+        pend <= pend - 1;
+      end
+    end else begin
+      // return invalid data
+      rdata <= 16'hxxxx;
+      mfc <= 0;
+    end
+  end
+end
 endmodule
 
 // ************************************************ Float ********************************************
