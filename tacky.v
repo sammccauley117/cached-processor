@@ -67,10 +67,14 @@
 `define LINES [16383:0]
 `define MEMDELAY 4
 
-module processor(halt, reset, clk);
+module processor(halt, readSignal, writeSignal, writeVal, memAddr, reset, clk, busy, readVal, lineChanged);
 	// Input / Output
-	output reg halt;
-	input reset, clk;
+	output reg halt; 
+	output readSignal, writeSignal; // TODO: Are these regs or wires??
+	output `LINE writeVal;
+	output `WORD memAddr;
+	input reset, clk, busy;
+	input `LINE readVal, lineChanged;
 	reg `WORD instructions [4:0];
 	reg `WORD mainmem `MEMSIZE; // Main memory block
 
