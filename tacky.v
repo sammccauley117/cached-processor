@@ -497,7 +497,7 @@ endmodule
 
 // ***************************************** Cache Controller ***************************************
 
-module cacheController(busy, memrnotw, memstrobe, memcore0readVal, core1readVal, core0lineChanged, core1lineChanged, memWriteVal, memAddr, core0read, core0write, core1read, core1write, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal);
+module cacheController(busy, memrnotw, memstrobe, memcore0readVal, core1readVal, core0lineNumChanged, core1lineNumChanged, core0lineChangeSignal, core1lineChangedSignal, memWriteVal, memAddr, core0read, core0write, core1read, core1write, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal, memDone);
 	output reg busy;
 
 	// Interface control lines with slowmem module
@@ -505,7 +505,8 @@ module cacheController(busy, memrnotw, memstrobe, memcore0readVal, core1readVal,
 	// Holds lines read from slowmem for interface with processor core
 	output reg `LINE core0readVal, core1readVal, memWriteVal;
 	// Contains number of line modified by write operation
-	output reg [14:0] core0lineChanged, core1lineChanged;
+	output reg [13:0] core0lineNumChanged, core1lineNumChanged;
+	output reg core0lineChangeSignal, core1lineChangedSignal;
 	// Holds memory address for interface with slowmem
 	output reg `LINE memAddr;
 	// Control signals from slowmem, processor cores
@@ -560,7 +561,8 @@ module cacheController(busy, memrnotw, memstrobe, memcore0readVal, core1readVal,
 			memWriteVal[core0addr/4][(core0addr/4)%16] <=  core0writeVal;
 			memrnotw <= 0;
 			// Notify core 1 which line has been changed
-			core1lineChanged <= core0addr/4;
+			core1lineNumChanged <= core0addr/4;
+			core1lineChanged <= 1;
 			busy <= 0;
 		end
 	end
@@ -577,17 +579,42 @@ module cacheController(busy, memrnotw, memstrobe, memcore0readVal, core1readVal,
 			memWriteVal[core1addr/4][(core1addr/4)%16] <=  core1writeVal;
 			memrnotw <= 0;
 			// Notify core 0 which line has been changed
-			core0lineChanged <= core0addr/4;
+			core0lineNumChanged <= core0addr/4;
+			core0lineChanged <= 1;
 			busy <= 0;
 		end
 	end
 
-	// Multiple attempt to read or write
+	// Simultaneous read/write operation
 	else begin
-		busy <= 1;
 		busy <= 0;
 	end
 endmodule
+
+
+// ******************************** Processor ************************************************
+module processor(halted, reset, clk);
+output reg halted;
+input reset, clk;
+
+processorCore core0(halt0, readSignal0, writeSignal0, writeVal0, memAddr0, reset0, clk, busy, readVal0, lineChanged0, lineChangedAddr0, core0);
+processorCore core1(halt1, readSignal1, writeSignal1, writeVal1, memAddr1, reset1, clk, busy, readVal1, lineChanged1, lineChangedAddr1, core1);
+cacheController mainControlcacheController(busy, memrnotw, memStrobe, readVal0, readVal1, lineChangedAddr0, lineChangedAddr, lineChanged0, lineChanged1, memWriteVal, memAddr, readSignal0, writeSignal0, readSignal1, 
+											writeSignal1, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal, memDone);
+slowmem64 slowmem(memDone, memReadVal, memAddr, memWriteVal, memrnotw, memStrobe, clk);
+
+wire busy;
+wire halt0, halt1;
+wire readSignal0, writeSignal0, readSignal1, writeSignal1;
+wire `WORD writeVal0, writeVal1;
+wire `LINE readVal0, readVal1; 
+wire [13:0] lineChangedAddr0, lineChangedAddr1;
+wire memrnotw;
+wire memDone;
+wire memStrobe;
+wire `LINE memAddr, memReadVal, memWriteVal;
+wire core0, core1;
+
 
 module testbench;
 	reg reset = 0;
