@@ -14,6 +14,9 @@
 `define PCDEST 4'b1000
 `define NODEST 4'b1001
 `define HALT   4'b1010
+`define LINENUM [78:65] // Where the line number is in a cachce entry
+`define DIRTY  [64] 	// Where the dirty bit is in a cache entry
+`define LINEDATA [63:0] // Where the line data is in a cache entry
 
 // Simple VLIW ops
 `define OPadd	5'b00000
@@ -67,29 +70,98 @@
 `define LINES [16383:0]
 `define MEMDELAY 4
 
-module processor(halt, readSignal, writeSignal, writeVal, memAddr, reset, clk, busy, readVal, lineChanged);
+module processor(halt, readSignal, writeSignal, writeVal, memAddr, reset, clk, busy, readVal, lineChanged, lineChangedAddr, core);
 	// Input / Output
 	output reg halt; 
-	output readSignal, writeSignal; // TODO: Are these regs or wires??
-	output `LINE writeVal;
-	output `WORD memAddr;
+	output reg readSignal, writeSignal;
+	output `WORD writeVal, memAddr;
 	input reset, clk, busy;
-	input `LINE readVal, lineChanged;
+	input `LINE readVal;
+	input lineChanged;
+	input [13:0] lineChangedAddr;
+	input core;
 	reg `WORD instructions [4:0];
 	reg `WORD mainmem `MEMSIZE; // Main memory block
+	reg [78:0] cache [15:0]; // 14b: line #, 1b: dirty bit, 64b: line data
+	reg memReadLoc; // Determines if the destination is partialResult 1 or 2
+	wire i [1:0]; // Cache index
+	assign i = memAddr % 4;
+	reg `REGWORD partialResult1, partialResult2; // First stage ALU result
 
 	// ****************   Reset   ****************
 	always @(reset) begin
 		halt = 0;
-		pc = 0;
+		pc = core ? 0'h8000 : 0;
 		$readmemh1(mainmem);
 		instructions[0] <= 0;
 		instructions[1] <= `SQUASH;
 		instructions[2] <= `SQUASH;
 		instructions[3] <= `SQUASH;
 		instructions[4] <= `SQUASH;
+		// Invalidate all cache entries
+		cache[0] `DIRTY <= 1;
+		cache[1] `DIRTY <= 1;
+		cache[2] `DIRTY <= 1;
+		cache[3] `DIRTY <= 1;
+		cache[4] `DIRTY <= 1;
+		cache[5] `DIRTY <= 1;
+		cache[6] `DIRTY <= 1;
+		cache[7] `DIRTY <= 1;
+		cache[8] `DIRTY <= 1;
+		cache[9] `DIRTY <= 1;
+		cache[10] `DIRTY <= 1;
+		cache[11] `DIRTY <= 1;
+		cache[12] `DIRTY <= 1;
+		cache[13] `DIRTY <= 1;
+		cache[14] `DIRTY <= 1;
+		cache[15] `DIRTY <= 1;
 	end
 	// **************** End Reset ****************
+
+
+
+	// ****************** Cache ******************
+	// 1) Busy line turned on, active pause register (helps keep pipeline and cores in sync)
+	always @(posedge busy) begin pause <= 1; end
+	// 2) Busy line turned off, check to see if the core needs to do anything
+	always @(negedge busy) begin
+		// a) Memory reads
+		if(readSignal) begin
+			// Load float
+			if(memOp == `OPlf) begin
+				// Determine which side the result goes to
+				if(readDest) begin
+					partialResult2 <= {1'b1, readVal[(16*(i+1))-1:16*i]};
+				end else begin 
+					partialResult1 <= {1'b1, readVal[(16*(i+1))-1:16*i]};
+				end
+			// Load integer
+			end else begin 
+				// Determine which side the result goes to
+				if(readDest) begin
+					partialResult2 <= {1'b0, readVal[(16*(i+1))-1:16*i]};
+				end else begin 
+					partialResult1 <= {1'b0, readVal[(16*(i+1))-1:16*i]};
+				end
+			end
+			// Push the read value to the cache
+			cache[memAddr/4%16]`LINEDATA <= readVal;
+			cache[memAddr/4%16]`DIRTY <= 0;
+		end
+		// b) Reset control registers
+		pause <= 0;
+		memOp <= 0;
+		readSignal <= 0;
+		writeSignal <= 0;
+	end
+	// 3) The other core wrote to the memory, check if we need to make an entry dirty
+	always @(posedge lineChanged) begin
+		// Check to see if we have that address in our cache
+		if(cache[lineChangedAddr%16]`LINENUM == lineChangedAddr) begin
+			cache[lineChangedAddr%16]`DIRTY <= 1; // Set the entry to dirty
+		end
+	end
+	// **************** End Cache ****************	
 
 
 
@@ -102,17 +174,19 @@ module processor(halt, readSignal, writeSignal, writeVal, memAddr, reset, clk, b
 	wire dependent = 0;
 	wire `WORD curInst, nextInst;
 	always @(posedge clk) begin
-		// 1) Delay pipeline if there are dependencies
-		if(delay) begin
-			instructions[1] <= `NOP;
-			delay <= delay - 1;
-		// 2) If there are no dependencies then load instruction and increment PC
-		end else begin
-			instructions[1] <= mainmem[pc]; // Pass the instruction down the pipeline
-			pc <= pc + 1; // Increment to the next instruction
-			// a) Check for dependencies
-			if(dependent) begin
-				delay <= 4; // Delay the pipeline 4 cycles to fix dependency
+		if(!pause && !busy) begin
+			// 1) Delay pipeline if there are dependencies
+			if(delay) begin
+				instructions[1] <= `NOP;
+				delay <= delay - 1;
+			// 2) If there are no dependencies then load instruction and increment PC
+			end else begin
+				instructions[1] <= mainmem[pc]; // Pass the instruction down the pipeline
+				pc <= pc + 1; // Increment to the next instruction
+				// a) Check for dependencies
+				if(dependent) begin
+					delay <= 4; // Delay the pipeline 4 cycles to fix dependency
+				end
 			end
 		end
 	end
@@ -130,35 +204,36 @@ module processor(halt, readSignal, writeSignal, writeVal, memAddr, reset, clk, b
 	reg [4:0] op1, op2; // op1 and op2 for easier access in the next ALU stage
 	reg [7:0] imm8; 
 	always @(posedge clk) begin
-		// 1) These loads will always need to happen
-		instructions[2] <= instructions[1]; // Pass instruction along
-		accVal1 <= regfile[0]; // Load accumulator value
-		regVal1 <= regfile[instructions[1] `REGFIELD1]; // Load register value
-		accType1 <= regfile[0][`TYPEBIT]; // Load accumulator type
-		regType1 <= regfile[instructions[1] `REGFIELD1][`TYPEBIT]; // Load register type
-		op1 <= instructions[1] `OPFIELD1; // Load op1 code
-		// 2) VLIW instructions, load second half
-		if(instructions[1] `OPFIELD1 >= `VLIWMIN && instructions[1] `OPFIELD1 <= `VLIWMAX) begin 
-			accVal2 <= regfile[1]; // Load accumulator value
-			regVal2 <= regfile[instructions[1] `REGFIELD2]; // Load register value
-			accType2 <= regfile[1][`TYPEBIT]; // Load accumulator type
-			regType2 <= regfile[instructions[1] `REGFIELD2][`TYPEBIT]; // Load register type
-			op2	<= instructions[1] `OPFIELD2; // Load op2 code
-		// 3) Non-VLIW Instructions load immediate 8-bit value
-		end else if(instructions[1] `OPFIELD1 >= `NONVLIWMIN && instructions[1] `OPFIELD1 <= `NONVLIWMAX) begin
-			imm8 <= instructions[1] `IMM8FIELD;
-			// a) Check if we need to push to the prefix register
-			if(instructions[1] `OPFIELD1 == `OPpre) begin
-				prefix <= instructions[1] `IMM8FIELD; // Update the prefix
+		if(!pause && !busy) begin
+			// 1) These loads will always need to happen
+			instructions[2] <= instructions[1]; // Pass instruction along
+			accVal1 <= regfile[0]; // Load accumulator value
+			regVal1 <= regfile[instructions[1] `REGFIELD1]; // Load register value
+			accType1 <= regfile[0][`TYPEBIT]; // Load accumulator type
+			regType1 <= regfile[instructions[1] `REGFIELD1][`TYPEBIT]; // Load register type
+			op1 <= instructions[1] `OPFIELD1; // Load op1 code
+			// 2) VLIW instructions, load second half
+			if(instructions[1] `OPFIELD1 >= `VLIWMIN && instructions[1] `OPFIELD1 <= `VLIWMAX) begin 
+				accVal2 <= regfile[1]; // Load accumulator value
+				regVal2 <= regfile[instructions[1] `REGFIELD2]; // Load register value
+				accType2 <= regfile[1][`TYPEBIT]; // Load accumulator type
+				regType2 <= regfile[instructions[1] `REGFIELD2][`TYPEBIT]; // Load register type
+				op2	<= instructions[1] `OPFIELD2; // Load op2 code
+			// 3) Non-VLIW Instructions load immediate 8-bit value
+			end else if(instructions[1] `OPFIELD1 >= `NONVLIWMIN && instructions[1] `OPFIELD1 <= `NONVLIWMAX) begin
+				imm8 <= instructions[1] `IMM8FIELD;
+				// a) Check if we need to push to the prefix register
+				if(instructions[1] `OPFIELD1 == `OPpre) begin
+					prefix <= instructions[1] `IMM8FIELD; // Update the prefix
+				end
 			end
-		end
+		end 
 	end
 	// **********   End Register Read   **********
 
 
 
 	// **********       ALU/MEM 1       ********** instructions[2]
-	reg `REGWORD partialResult1, partialResult2; // First stage ALU result
 	reg [4:0] dest1, dest2; // Where this result needs to go in the Register Write stage
 	reg isDiv1, isDiv2; // Whether or not this instruction is a float div
 	reg `WORD divTemp1, divTemp2; // Partial result stores the recip, this stores a copy of the accumulator value
@@ -189,98 +264,154 @@ module processor(halt, readSignal, writeSignal, writeVal, memAddr, reset, clk, b
 	fslt fslt1(fSlt1, accVal1, regVal1); 
 	fslt fslt2(fSlt2, accVal2, regVal2);
 	always @(posedge clk) begin
-		instructions[3] <= instructions[2]; // Pass instruction along
-		// 1) VLIW instructions
-		if(instructions[2] `OPFIELD1 >= `VLIWMIN && instructions[2] `OPFIELD1 <= `VLIWMAX) begin 
-			// a) Set the destination for op1
-			if(op1 == `OPa2r || op1 == `OPlf || op1 == `OPli) begin
-				dest1 <= instructions[2] `REGFIELD1; // Non-accumulator register destination
-			end else if(op1 == `OPjr) begin
-				dest1 <= `PCDEST; // PC destination
-			end else if(op1 == `OPst) begin
-				dest1 <= `NODEST; // No destination
-			end else begin
-				dest1 <= 0; // Accumulator desination
+		if(!pause && !busy) begin
+			instructions[3] <= instructions[2]; // Pass instruction along
+			// 1) VLIW instructions
+			if(instructions[2] `OPFIELD1 >= `VLIWMIN && instructions[2] `OPFIELD1 <= `VLIWMAX) begin 
+				// a) Set the destination for op1
+				if(op1 == `OPa2r || op1 == `OPlf || op1 == `OPli) begin
+					dest1 <= instructions[2] `REGFIELD1; // Non-accumulator register destination
+				end else if(op1 == `OPjr) begin
+					dest1 <= `PCDEST; // PC destination
+				end else if(op1 == `OPst) begin
+					dest1 <= `NODEST; // No destination
+				end else begin
+					dest1 <= 0; // Accumulator desination
+				end
+				// b) Set destination for op2
+				if(op2 == `OPa2r || op2 == `OPlf || op2 == `OPli) begin
+					dest2 <= instructions[2] `REGFIELD2; // Non-accumulator register destination
+				end else if(op2 == `OPjr) begin
+					dest2 <= `PCDEST; // PC destination
+				end else if(op2 == `OPst) begin
+					dest2 <= `NODEST; // No destination
+				end else begin
+					dest2 <= 1; // Accumulator destination
+				end
+				// c) Check for float divide
+				isDiv1 <= (op1 == `OPdiv && accType1) ? 1 : 0;
+				isDiv2 <= (op2 == `OPdiv && accType2) ? 1 : 0;
+				divTemp1 <= (op1 == `OPdiv && accType1) ? accVal1 : 0;
+				divTemp2 <= (op2 == `OPdiv && accType2) ? accVal2 : 0;
+				// d) Execute VLIW-1 operations
+				case(op1)
+					`OPnot: begin partialResult1 <= {accType1, ~regVal1}; end
+					`OPxor: begin partialResult1 <= {accType1, accVal1^regVal1}; end
+					`OPand: begin partialResult1 <= {accType1, accVal1&regVal1}; end
+					`OPor:  begin partialResult1 <= {accType1, accVal1|regVal1}; end
+					`OPa2r: begin partialResult1 <= {accType1, accVal1}; end
+					`OPr2a: begin partialResult1 <= {regType1, regVal1}; end
+					`OPadd: begin partialResult1 <= {accType1, accType1 ? fAdd1 : accVal1 + regVal1}; end
+					`OPsub: begin partialResult1 <= {accType1, accType1 ? fSub1 : accVal1 - regVal1}; end
+					`OPmul: begin partialResult1 <= {accType1, accType1 ? fMul1 : accVal1 * regVal1}; end
+					`OPsh:  begin partialResult1 <= {accType1, accType1 ? fSh1  : accVal1 << regVal1}; end
+					`OPcvt: begin partialResult1 <= {~regType1, regType1 ? f2i1 : i2f1}; end
+					`OPdiv: begin partialResult1 <= {accType1, accType1 ? fRecip1 : accVal1 / regVal1}; end
+					`OPslt: begin partialResult1 <= {16'h0000, regType1 ? fSlt1 : accVal1 < regVal1}; end
+					`OPjr:  begin partialResult1 <= regVal1; end
+					// Memory operation
+					default: begin
+						// 1) Memory Read
+						if(op1 == `OPlf || op1 == `OPli) begin 
+							// a) Check if it's already in our cache and that it's clean
+							if(cache[accVal1/4%16]`LINENUM == accVal1/4 && !cache[accVal1/4%16]`DIRTY) begin 
+								// Use the cache to execute the operation
+								if(op1 == `OPlf) begin 
+									`OPlf: begin partialResult1 <= {1'b1, cache[accVal1/4%16]`LINEDATA}; end
+								end else begin 
+									`OPli: begin partialResult1 <= {1'b0, cache[accVal1/4%16]`LINEDATA}; end
+								end
+							// b) Cache miss: request data from slow memory
+							end else begin 
+								readSignal <= 1; // Set read signal high to indicate to slow mem we need something
+								memAddr <= accVal1; // Set the requested address
+								readDest <= 0; // Indicates that the result will go to partialResult1
+								memOp <= op1; // Sets the memory operation the was used
+							end
+						// 1) Memory Write
+						end else begin 
+							// a) Write to the cache index
+							cache[accVal1/4%16][(16*((regVal1%4)+1))-1:16*(regVal1%4)] <= accVal1;
+							// b) Write to slow mem
+							writeSignal <= 1;
+							memAddr <= regVal1;
+							writeVal <= accVal1;
+							memOp <= op1;
+						end
+					end
+				endcase
+				// e) Execute VLIW-2 operations
+				case(op2)
+					`OPnot: begin partialResult2 <= {accType2, ~regVal2}; end
+					`OPxor: begin partialResult2 <= {accType2, accVal2^regVal2}; end
+					`OPand: begin partialResult2 <= {accType2, accVal2&accVal2}; end
+					`OPor:  begin partialResult2 <= {accType2, accVal2|regVal2}; end
+					`OPa2r: begin partialResult2 <= {accType2, accVal2}; end
+					`OPr2a: begin partialResult2 <= {regType2, regVal2}; end
+					`OPadd: begin partialResult2 <= {accType2, accType2 ? fAdd1 : accVal2 + regVal2}; end
+					`OPsub: begin partialResult2 <= {accType2, accType2 ? fSub1 : accVal2 - regVal2}; end
+					`OPmul: begin partialResult2 <= {accType2, accType2 ? fMul1 : accVal2 * regVal2}; end
+					`OPsh:  begin partialResult2 <= {accType2, accType2 ? fSh1  : accVal2 << regVal2}; end
+					`OPcvt: begin partialResult2 <= {~regType2, regType2 ? f2i1 : i2f1}; end
+					`OPdiv: begin partialResult2 <= {accType2, accType2 ? fRecip2 : accVal2 / regVal2}; end
+					`OPslt: begin partialResult2 <= {16'h0000, regType2 ? fSlt1 : accVal2 < regVal2}; end
+					`OPjr:  begin partialResult2 <= regVal2; end
+					// Memory operation
+					default: begin
+						// 1) Memory Read
+						if(op2 == `OPlf || op2 == `OPli) begin 
+							// a) Check if it's already in our cache and that it's clean
+							if(cache[accVal2/4%16]`LINENUM == accVal2/4 && !cache[accVal2/4%16]`DIRTY) begin 
+								// Use the cache to execute the operation
+								if(op2 == `OPlf) begin 
+									`OPlf: begin partialResult2 <= {1'b1, cache[accVal2/4%16]`LINEDATA}; end
+								end else begin 
+									`OPli: begin partialResult2 <= {1'b0, cache[accVal2/4%16]`LINEDATA}; end
+								end
+							// b) Cache miss: request data from slow memory
+							end else begin 
+								readSignal <= 1; // Set read signal high to indicate to slow mem we need something
+								memAddr <= accVal2; // Set the requested address
+								readDest <= 1; // Indicates that the result will go to partialResult1
+								memOp <= op2; // Sets the memory operation the was used
+							end
+						// 1) Memory Write
+						end else begin 
+							// a) Write to the cache index
+							cache[accVal2/4%16][(16*((regVal2%4)+1))-1:16*(regVal2%4)] <= accVal2;
+							// b) Write to slow mem
+							writeSignal <= 1;
+							memAddr <= regVal1;
+							writeVal <= accVal1;
+							memOp <= op2;
+						end
+					end
+				endcase
+			// 2) Non-VLIW Instructions
+			end else if(instructions[2] `OPFIELD1 >= `NONVLIWMIN && instructions[2] `OPFIELD1 <= `NONVLIWMAX) begin
+				// a) These instructions aren't float div's so make isDiv's false
+				isDiv1 <= 0; 
+				isDiv2 <= 0;
+				// b) Set partial results and destinations
+				case(op1)
+					`OPcf8: begin 
+						partialResult1 <= {1'b1, prefix, imm8}; 
+						dest1 <= instructions[2] `REGFIELD1; end
+					`OPci8: begin 
+						partialResult1 <= {1'b0, prefix, imm8};
+						dest1 <= instructions[2] `REGFIELD1; end 
+					`OPjp8: begin 
+						partialResult1 <= {prefix, imm8}; 
+						dest1 <= `PCDEST; end
+					`OPjz8: begin 
+						partialResult1 <= {prefix, imm8}; 
+						dest1 <= (regVal1 == 0) ? `PCDEST : `NODEST; end
+					`OPjnz8: begin 
+						partialResult1 <= {prefix, imm8}; 
+						dest1 <= (regVal1 != 0) ? `PCDEST : `NODEST; end
+					`OPsys: begin dest1 <= `HALT; end
+				endcase
 			end
-			// b) Set destination for op2
-			if(op2 == `OPa2r || op2 == `OPlf || op2 == `OPli) begin
-				dest2 <= instructions[2] `REGFIELD2; // Non-accumulator register destination
-			end else if(op2 == `OPjr) begin
-				dest2 <= `PCDEST; // PC destination
-			end else if(op2 == `OPst) begin
-				dest2 <= `NODEST; // No destination
-			end else begin
-				dest2 <= 1; // Accumulator destination
-			end
-			// c) Check for float divide
-			isDiv1 <= (op1 == `OPdiv && accType1) ? 1 : 0;
-			isDiv2 <= (op2 == `OPdiv && accType2) ? 1 : 0;
-			divTemp1 <= (op1 == `OPdiv && accType1) ? accVal1 : 0;
-			divTemp2 <= (op2 == `OPdiv && accType2) ? accVal2 : 0;
-			// d) Execute VLIW-1 operations
-			case(op1)
-				`OPnot: begin partialResult1 <= {accType1, ~regVal1}; end
-				`OPxor: begin partialResult1 <= {accType1, accVal1^regVal1}; end
-				`OPand: begin partialResult1 <= {accType1, accVal1&regVal1}; end
-				`OPor:  begin partialResult1 <= {accType1, accVal1|regVal1}; end
-				`OPa2r: begin partialResult1 <= {accType1, accVal1}; end
-				`OPr2a: begin partialResult1 <= {regType1, regVal1}; end
-				`OPadd: begin partialResult1 <= {accType1, accType1 ? fAdd1 : accVal1 + regVal1}; end
-				`OPsub: begin partialResult1 <= {accType1, accType1 ? fSub1 : accVal1 - regVal1}; end
-				`OPmul: begin partialResult1 <= {accType1, accType1 ? fMul1 : accVal1 * regVal1}; end
-				`OPsh:  begin partialResult1 <= {accType1, accType1 ? fSh1  : accVal1 << regVal1}; end
-				`OPcvt: begin partialResult1 <= {~regType1, regType1 ? f2i1 : i2f1}; end
-				`OPdiv: begin partialResult1 <= {accType1, accType1 ? fRecip1 : accVal1 / regVal1}; end
-				`OPslt: begin partialResult1 <= {16'h0000, regType1 ? fSlt1 : accVal1 < regVal1}; end
-				`OPlf:  begin partialResult1 <= {1'b1, mainmem[accVal1]}; end
-				`OPli:  begin partialResult1 <= {1'b0, mainmem[accVal1]}; end
-				`OPjr:  begin partialResult1 <= regVal1; end
-				`OPst:  begin mainmem[regVal1] <= accVal1; end
-			endcase
-			// e) Execute VLIW-2 operations
-			case(op2)
-				`OPnot: begin partialResult2 <= {accType2, ~regVal2}; end
-				`OPxor: begin partialResult2 <= {accType2, accVal2^regVal2}; end
-				`OPand: begin partialResult2 <= {accType2, accVal2&accVal2}; end
-				`OPor:  begin partialResult2 <= {accType2, accVal2|regVal2}; end
-				`OPa2r: begin partialResult2 <= {accType2, accVal2}; end
-				`OPr2a: begin partialResult2 <= {regType2, regVal2}; end
-				`OPadd: begin partialResult2 <= {accType2, accType2 ? fAdd1 : accVal2 + regVal2}; end
-				`OPsub: begin partialResult2 <= {accType2, accType2 ? fSub1 : accVal2 - regVal2}; end
-				`OPmul: begin partialResult2 <= {accType2, accType2 ? fMul1 : accVal2 * regVal2}; end
-				`OPsh:  begin partialResult2 <= {accType2, accType2 ? fSh1  : accVal2 << regVal2}; end
-				`OPcvt: begin partialResult2 <= {~regType2, regType2 ? f2i1 : i2f1}; end
-				`OPdiv: begin partialResult2 <= {accType2, accType2 ? fRecip2 : accVal2 / regVal2}; end
-				`OPslt: begin partialResult2 <= {16'h0000, regType2 ? fSlt1 : accVal2 < regVal2}; end
-				`OPlf:  begin partialResult2 <= {1'b1, mainmem[accVal2]}; end
-				`OPli:  begin partialResult2 <= {1'b0, mainmem[accVal2]}; end
-				`OPjr:  begin partialResult2 <= regVal2; end
-				`OPst:  begin mainmem[regVal2] <= accVal2; end
-			endcase
-		// 2) Non-VLIW Instructions
-		end else if(instructions[2] `OPFIELD1 >= `NONVLIWMIN && instructions[2] `OPFIELD1 <= `NONVLIWMAX) begin
-			// a) These instructions aren't float div's so make isDiv's false
-			isDiv1 <= 0; 
-			isDiv2 <= 0;
-			// b) Set partial results and destinations
-			case(op1)
-				`OPcf8: begin 
-					partialResult1 <= {1'b1, prefix, imm8}; 
-					dest1 <= instructions[2] `REGFIELD1; end
-				`OPci8: begin 
-					partialResult1 <= {1'b0, prefix, imm8};
-					dest1 <= instructions[2] `REGFIELD1; end 
-				`OPjp8: begin 
-					partialResult1 <= {prefix, imm8}; 
-					dest1 <= `PCDEST; end
-				`OPjz8: begin 
-					partialResult1 <= {prefix, imm8}; 
-					dest1 <= (regVal1 == 0) ? `PCDEST : `NODEST; end
-				`OPjnz8: begin 
-					partialResult1 <= {prefix, imm8}; 
-					dest1 <= (regVal1 != 0) ? `PCDEST : `NODEST; end
-				`OPsys: begin dest1 <= `HALT; end
-			endcase
 		end
 	end
 	// **********     End ALU/MEM 1     **********
@@ -297,11 +428,13 @@ module processor(halt, readSignal, writeSignal, writeVal, memAddr, reset, clk, b
 	fmul fdiv1(fDiv1, divTemp1, partialResult1 `WORD);
 	fmul fdiv2(fDiv2, divTemp2, partialResult2 `WORD);
 	always @(posedge clk) begin
-		instructions[4] <= instructions[3];
-		finalResult1 <= isDiv1 ? fDiv1 : partialResult1;
-		finalResult2 <= isDiv2 ? fDiv2 : partialResult2;
-		finalDest1 <= dest1;
-		finalDest2 <= dest2;
+		if(!pause && !busy) begin
+			instructions[4] <= instructions[3];
+			finalResult1 <= isDiv1 ? fDiv1 : partialResult1;
+			finalResult2 <= isDiv2 ? fDiv2 : partialResult2;
+			finalDest1 <= dest1;
+			finalDest2 <= dest2;
+		end
 	end
 	// **********      End ALU 2        **********
 		
@@ -309,52 +442,54 @@ module processor(halt, readSignal, writeSignal, writeVal, memAddr, reset, clk, b
 
 	// **********      Reg Write        ********** instructions[4]
 	always @(posedge clk) begin
-		instructions[0] <= instructions[4]; // This doesn't do anything but it keeps the process consistent
-		// 1) VLIW instructions
-		if(instructions[4] `OPFIELD1 >= `VLIWMIN && instructions[4] `OPFIELD1 <= `VLIWMAX) begin 
-			// A) Commit VLIW 1
-			if(finalDest1 == `PCDEST) begin
-				// a) Jump instruction, clear the pipeline 
-				// Wait a tick to assure an overwrite of previous operations
-				#1 pc <= finalResult1;
-				#1 instructions[1] <= `SQUASH;
-				#1 instructions[2] <= `SQUASH;
-				#1 instructions[3] <= `SQUASH;
-				#1 instructions[4] <= `SQUASH;
-			end else if(finalDest1 != `NODEST) begin
-				// b) Write to register destination
-				regfile[finalDest1] <= finalResult1;
+		if(!pause && !busy) begin
+			instructions[0] <= instructions[4]; // This doesn't do anything but it keeps the process consistent
+			// 1) VLIW instructions
+			if(instructions[4] `OPFIELD1 >= `VLIWMIN && instructions[4] `OPFIELD1 <= `VLIWMAX) begin 
+				// A) Commit VLIW 1
+				if(finalDest1 == `PCDEST) begin
+					// a) Jump instruction, clear the pipeline 
+					// Wait a tick to assure an overwrite of previous operations
+					#1 pc <= finalResult1;
+					#1 instructions[1] <= `SQUASH;
+					#1 instructions[2] <= `SQUASH;
+					#1 instructions[3] <= `SQUASH;
+					#1 instructions[4] <= `SQUASH;
+				end else if(finalDest1 != `NODEST) begin
+					// b) Write to register destination
+					regfile[finalDest1] <= finalResult1;
+				end
+				// B) Commit VLIW 2
+				if(finalDest2 == `PCDEST) begin
+					// a) Jump instruction, clear the pipeline 
+					// Wait a tick to assure an overwrite of previous operations
+					#1 pc <= finalResult2;
+					#1 instructions[1] <= `SQUASH;
+					#1 instructions[2] <= `SQUASH;
+					#1 instructions[3] <= `SQUASH;
+					#1 instructions[4] <= `SQUASH;
+				end else if(finalDest2 != `NODEST) begin
+					// b) Write to register destination
+					regfile[finalDest2] <= finalResult2;
+				end
+			// 2) Non-VLIW Instructions
+			end else if(instructions[4] `OPFIELD1 >= `NONVLIWMIN && instructions[4] `OPFIELD1 <= `NONVLIWMAX) begin
+				if(finalDest1 == `PCDEST) begin
+					// A) Jump instruction, clear the pipeline 
+					// Wait a tick to assure an overwrite of previous operations
+					#1 pc <= finalResult1;
+					#1 instructions[1] <= `SQUASH;
+					#1 instructions[2] <= `SQUASH;
+					#1 instructions[3] <= `SQUASH;
+					#1 instructions[4] <= `SQUASH;
+				end else if(finalDest1 == `HALT) begin
+					// B) SYS call: halt
+					halt <= 1;
+				end else if(finalDest1 != `NODEST) begin 
+					// C) Write to register destination
+					regfile[finalDest1] <= finalResult1;
+				end 
 			end
-			// B) Commit VLIW 2
-			if(finalDest2 == `PCDEST) begin
-				// a) Jump instruction, clear the pipeline 
-				// Wait a tick to assure an overwrite of previous operations
-				#1 pc <= finalResult2;
-				#1 instructions[1] <= `SQUASH;
-				#1 instructions[2] <= `SQUASH;
-				#1 instructions[3] <= `SQUASH;
-				#1 instructions[4] <= `SQUASH;
-			end else if(finalDest2 != `NODEST) begin
-				// b) Write to register destination
-				regfile[finalDest2] <= finalResult2;
-			end
-		// 2) Non-VLIW Instructions
-		end else if(instructions[4] `OPFIELD1 >= `NONVLIWMIN && instructions[4] `OPFIELD1 <= `NONVLIWMAX) begin
-			if(finalDest1 == `PCDEST) begin
-				// A) Jump instruction, clear the pipeline 
-				// Wait a tick to assure an overwrite of previous operations
-				#1 pc <= finalResult1;
-				#1 instructions[1] <= `SQUASH;
-				#1 instructions[2] <= `SQUASH;
-				#1 instructions[3] <= `SQUASH;
-				#1 instructions[4] <= `SQUASH;
-			end else if(finalDest1 == `HALT) begin
-				// B) SYS call: halt
-				halt <= 1;
-			end else if(finalDest1 != `NODEST) begin 
-				// C) Write to register destination
-				regfile[finalDest1] <= finalResult1;
-			end 
 		end
 	end
 	// **********    End Reg Write      **********
