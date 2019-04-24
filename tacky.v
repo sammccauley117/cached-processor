@@ -495,6 +495,34 @@ module processor(halt, readSignal, writeSignal, writeVal, memAddr, reset, clk, b
 	// **********    End Reg Write      **********
 endmodule
 
+// ***************************************** Cache Controller ***************************************
+
+module cacheController(busy, core0readVal, core1readVal, core0lineChanged, core1lineChanged, memWriteVal, memAddr, core0read, core0write, core1read, core1write, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal);
+	output reg busy;
+	output reg `LINE core0readVal, core1readVal, memWriteVal;
+	output reg [14:0] core0lineChanged, core1lineChanged; // Is this size right?
+	output reg `WORD memAddr;
+	input core0read, core0write, core1read, core1write;
+	input `LINE core0writeVal, core1writeVal, memReadVal;
+	input `WORD core0addr, core1addr;
+
+	reg `LINE bufWriteVal;
+	reg `WORD bufAddr;
+	reg bufCoreID;
+
+	if(core0read && !core1read) begin
+		busy <= 1;
+		memAddr <= core0addr;
+		while(!mfc) begin
+
+		end
+		core0readVal <= memReadVal;
+		core1lineChanged <= core0addr / 4;
+
+
+
+endmodule
+
 module testbench;
 	reg reset = 0;
 	reg clk = 0;
