@@ -497,27 +497,44 @@ endmodule
 
 // ***************************************** Cache Controller ***************************************
 
-module cacheController(busy, core0readVal, core1readVal, core0lineChanged, core1lineChanged, memWriteVal, memAddr, core0read, core0write, core1read, core1write, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal);
+module cacheController(busy, memrnotw, memstrobe, memcore0readVal, core1readVal, core0lineChanged, core1lineChanged, memWriteVal, memAddr, core0read, core0write, core1read, core1write, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal);
 	output reg busy;
+	output reg memrnotw, memstrobe;
 	output reg `LINE core0readVal, core1readVal, memWriteVal;
 	output reg [14:0] core0lineChanged, core1lineChanged; // Is this size right?
 	output reg `WORD memAddr;
-	input core0read, core0write, core1read, core1write;
+	input core0read, core0write, core1read, core1write, memDone;
 	input `LINE core0writeVal, core1writeVal, memReadVal;
 	input `WORD core0addr, core1addr;
 
+	// These regs will hold buffer values, in case we receive two write requests in simultaneously
 	reg `LINE bufWriteVal;
 	reg `WORD bufAddr;
 	reg bufCoreID;
 
+	// Requesting core 0 read, no core 1 read
 	if(core0read && !core1read) begin
-		busy <= 1;
-		memAddr <= core0addr;
-		while(!mfc) begin
-
+		busy <= 1; 
+		// Get line address for interface with slowmem controller
+		memAddr <= core0addr/4;
+		always@(posedge memDone) begin 
+			core0readVal <= memReadVal; // Get line from slowmem
+			core1lineChanged <= core0addr / 4; // Finds line number, based on address
+			busy <= 0;
 		end
-		core0readVal <= memReadVal;
-		core1lineChanged <= core0addr / 4;
+		
+	end
+
+	// Requesting core 1 read, no core 0 read
+	if(!core0read && core1read) begin
+		busy <= 1;
+		memAddr <= core1addr/4;
+		always@(posedge memDone) begin 
+		end
+		core1readVal <= memReadVal;
+		core0lineChanged <= core1addr / 4; // Finds line number, based on address
+
+
 
 
 
