@@ -308,10 +308,7 @@ module processor(halt, readSignal, writeSignal, writeVal, memAddr, reset, clk, b
 					`OPcvt: begin partialResult1 <= {~regType1, regType1 ? f2i1 : i2f1}; end
 					`OPdiv: begin partialResult1 <= {accType1, accType1 ? fRecip1 : accVal1 / regVal1}; end
 					`OPslt: begin partialResult1 <= {16'h0000, regType1 ? fSlt1 : accVal1 < regVal1}; end
-					`OPlf:  begin partialResult1 <= {1'b1, mainmem[accVal1]}; end
-					`OPli:  begin partialResult1 <= {1'b0, mainmem[accVal1]}; end
 					`OPjr:  begin partialResult1 <= regVal1; end
-					`OPst:  begin mainmem[regVal1] <= accVal1; end
 					// Memory operation
 					default: begin
 						// 1) Memory Read
@@ -358,10 +355,37 @@ module processor(halt, readSignal, writeSignal, writeVal, memAddr, reset, clk, b
 					`OPcvt: begin partialResult2 <= {~regType2, regType2 ? f2i1 : i2f1}; end
 					`OPdiv: begin partialResult2 <= {accType2, accType2 ? fRecip2 : accVal2 / regVal2}; end
 					`OPslt: begin partialResult2 <= {16'h0000, regType2 ? fSlt1 : accVal2 < regVal2}; end
-					`OPlf:  begin partialResult2 <= {1'b1, mainmem[accVal2]}; end
-					`OPli:  begin partialResult2 <= {1'b0, mainmem[accVal2]}; end
 					`OPjr:  begin partialResult2 <= regVal2; end
-					`OPst:  begin mainmem[regVal2] <= accVal2; end
+					// Memory operation
+					default: begin
+						// 1) Memory Read
+						if(op2 == `OPlf || op2 == `OPli) begin 
+							// a) Check if it's already in our cache and that it's clean
+							if(cache[accVal2/4%16]`LINENUM == accVal2/4 && !cache[accVal2/4%16]`DIRTY) begin 
+								// Use the cache to execute the operation
+								if(op2 == `OPlf) begin 
+									`OPlf: begin partialResult2 <= {1'b1, cache[accVal2/4%16]`LINEDATA}; end
+								end else begin 
+									`OPli: begin partialResult2 <= {1'b0, cache[accVal2/4%16]`LINEDATA}; end
+								end
+							// b) Cache miss: request data from slow memory
+							end else begin 
+								readSignal <= 1; // Set read signal high to indicate to slow mem we need something
+								memAddr <= accVal2; // Set the requested address
+								readDest <= 1; // Indicates that the result will go to partialResult1
+								memOp <= op2; // Sets the memory operation the was used
+							end
+						// 1) Memory Write
+						end else begin 
+							// a) Write to the cache index
+							cache[accVal2/4%16][(16*((regVal2%4)+1))-1:16*(regVal2%4)] <= accVal2;
+							// b) Write to slow mem
+							writeSignal <= 1;
+							memAddr <= regVal1;
+							writeVal <= accVal1;
+							memOp <= op2;
+						end
+					end
 				endcase
 			// 2) Non-VLIW Instructions
 			end else if(instructions[2] `OPFIELD1 >= `NONVLIWMIN && instructions[2] `OPFIELD1 <= `NONVLIWMAX) begin
