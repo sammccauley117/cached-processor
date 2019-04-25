@@ -74,24 +74,25 @@ module processorCore(halt, readSignal, writeSignal, writeVal, memAddr, reset, cl
 	// Input / Output
 	output reg halt; 
 	output reg readSignal, writeSignal;
-	output `WORD writeVal, memAddr;
+	output reg `WORD writeVal, memAddr;
 	input reset, clk, busy;
 	input `LINE readVal;
 	input lineChanged;
 	input [13:0] lineChangedAddr;
 	input core;
-	reg `WORD instructions [4:0];
+	reg `WORD instructions [4:0]; // The instruction that each pipeline stage currently has
+	reg `WORD pc; // Instruction location
 	reg `WORD mainmem `MEMSIZE; // Main memory block
 	reg [78:0] cache [15:0]; // 14b: line #, 1b: dirty bit, 64b: line data
-	reg memReadLoc; // Determines if the destination is partialResult 1 or 2
-	wire i [1:0]; // Cache index
-	assign i = memAddr % 4;
+	reg readDest; // Determines if the destination is partialResult 1 or 2
+	reg pause;
+	reg [4:0] memOp;
 	reg `REGWORD partialResult1, partialResult2; // First stage ALU result
 
 	// ****************   Reset   ****************
 	always @(reset) begin
 		halt = 0;
-		pc = core ? 0'h8000 : 0;
+		pc = core ? 16'h8000 : 16'b0;
 		$readmemh1(mainmem);
 		instructions[0] <= 0;
 		instructions[1] <= `SQUASH;
@@ -131,17 +132,37 @@ module processorCore(halt, readSignal, writeSignal, writeVal, memAddr, reset, cl
 			if(memOp == `OPlf) begin
 				// Determine which side the result goes to
 				if(readDest) begin
-					partialResult2 <= {1'b1, readVal[(16*(i+1))-1:16*i]};
+					case(memAddr%4)
+						0: begin partialResult2 <= {1'b1, readVal[15:0]}; end
+						1: begin partialResult2 <= {1'b1, readVal[31:16]}; end
+						2: begin partialResult2 <= {1'b1, readVal[47:32]}; end
+						3: begin partialResult2 <= {1'b1, readVal[63:48]}; end
+					endcase
 				end else begin 
-					partialResult1 <= {1'b1, readVal[(16*(i+1))-1:16*i]};
+					case(memAddr%4)
+						0: begin partialResult1 <= {1'b1, readVal[15:0]}; end
+						1: begin partialResult1 <= {1'b1, readVal[31:16]}; end
+						2: begin partialResult1 <= {1'b1, readVal[47:32]}; end
+						3: begin partialResult1 <= {1'b1, readVal[63:48]}; end
+					endcase
 				end
 			// Load integer
 			end else begin 
 				// Determine which side the result goes to
 				if(readDest) begin
-					partialResult2 <= {1'b0, readVal[(16*(i+1))-1:16*i]};
+					case(memAddr%4)
+						0: begin partialResult2 <= {1'b0, readVal[15:0]}; end
+						1: begin partialResult2 <= {1'b0, readVal[31:16]}; end
+						2: begin partialResult2 <= {1'b0, readVal[47:32]}; end
+						3: begin partialResult2 <= {1'b0, readVal[63:48]}; end
+					endcase
 				end else begin 
-					partialResult1 <= {1'b0, readVal[(16*(i+1))-1:16*i]};
+					case(memAddr%4)
+						0: begin partialResult1 <= {1'b0, readVal[15:0]}; end
+						1: begin partialResult1 <= {1'b0, readVal[31:16]}; end
+						2: begin partialResult1 <= {1'b0, readVal[47:32]}; end
+						3: begin partialResult1 <= {1'b0, readVal[63:48]}; end
+					endcase
 				end
 			end
 			// Push the read value to the cache
@@ -169,7 +190,6 @@ module processorCore(halt, readSignal, writeSignal, writeVal, memAddr, reset, cl
 	// All this phase does is grab the instruction from memory and
 	// increment the PC. PC overwrites (jump instructions) are handled
 	// in the Reg. Write stage.
-	reg `WORD pc = 0; // Instruction location
 	reg [2:0] delay; 
 	wire dependent = 0;
 	wire `WORD curInst, nextInst;
@@ -317,9 +337,9 @@ module processorCore(halt, readSignal, writeSignal, writeVal, memAddr, reset, cl
 							if(cache[accVal1/4%16]`LINENUM == accVal1/4 && !cache[accVal1/4%16]`DIRTY) begin 
 								// Use the cache to execute the operation
 								if(op1 == `OPlf) begin 
-									`OPlf: begin partialResult1 <= {1'b1, cache[accVal1/4%16]`LINEDATA}; end
+									partialResult1 <= {1'b1, cache[accVal1/4%16]`LINEDATA};
 								end else begin 
-									`OPli: begin partialResult1 <= {1'b0, cache[accVal1/4%16]`LINEDATA}; end
+									partialResult1 <= {1'b0, cache[accVal1/4%16]`LINEDATA};
 								end
 							// b) Cache miss: request data from slow memory
 							end else begin 
@@ -331,7 +351,12 @@ module processorCore(halt, readSignal, writeSignal, writeVal, memAddr, reset, cl
 						// 1) Memory Write
 						end else begin 
 							// a) Write to the cache index
-							cache[accVal1/4%16][(16*((regVal1%4)+1))-1:16*(regVal1%4)] <= accVal1;
+							case(regVal1%4)
+								0: begin cache[regVal1/4%16][15:0]  <= accVal1; end
+								1: begin cache[regVal1/4%16][31:16] <= accVal1; end
+								2: begin cache[regVal1/4%16][47:32] <= accVal1; end
+								3: begin cache[regVal1/4%16][63:48] <= accVal1; end
+							endcase
 							// b) Write to slow mem
 							writeSignal <= 1;
 							memAddr <= regVal1;
@@ -364,9 +389,9 @@ module processorCore(halt, readSignal, writeSignal, writeVal, memAddr, reset, cl
 							if(cache[accVal2/4%16]`LINENUM == accVal2/4 && !cache[accVal2/4%16]`DIRTY) begin 
 								// Use the cache to execute the operation
 								if(op2 == `OPlf) begin 
-									`OPlf: begin partialResult2 <= {1'b1, cache[accVal2/4%16]`LINEDATA}; end
+									partialResult2 <= {1'b1, cache[accVal2/4%16]`LINEDATA};
 								end else begin 
-									`OPli: begin partialResult2 <= {1'b0, cache[accVal2/4%16]`LINEDATA}; end
+									partialResult2 <= {1'b0, cache[accVal2/4%16]`LINEDATA};
 								end
 							// b) Cache miss: request data from slow memory
 							end else begin 
@@ -378,7 +403,12 @@ module processorCore(halt, readSignal, writeSignal, writeVal, memAddr, reset, cl
 						// 1) Memory Write
 						end else begin 
 							// a) Write to the cache index
-							cache[accVal2/4%16][(16*((regVal2%4)+1))-1:16*(regVal2%4)] <= accVal2;
+							case(regVal2%4)
+								0: begin cache[regVal2/4%16][15:0]  <= accVal2; end
+								1: begin cache[regVal2/4%16][31:16] <= accVal2; end
+								2: begin cache[regVal2/4%16][47:32] <= accVal2; end
+								3: begin cache[regVal2/4%16][63:48] <= accVal2; end
+							endcase
 							// b) Write to slow mem
 							writeSignal <= 1;
 							memAddr <= regVal1;
@@ -496,8 +526,7 @@ module processorCore(halt, readSignal, writeSignal, writeVal, memAddr, reset, cl
 endmodule
 
 // ***************************************** Cache Controller ***************************************
-
-module cacheController(busy, memrnotw, memstrobe, memcore0readVal, core1readVal, core0lineNumChanged, core1lineNumChanged, core0lineChangeSignal, core1lineChangedSignal, memWriteVal, memAddr, clk, core0read, core0write, core1read, core1write, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal, memDone);
+module cacheController(busy, memrnotw, memstrobe, core0readVal, core1readVal, core0lineNumChanged, core1lineNumChanged, core0lineChangeSignal, core1lineChangedSignal, memWriteVal, memAddr, clk, core0read, core0write, core1read, core1write, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal, memDone);
 	output reg busy;
 
 	// Interface control lines with slowmem module
@@ -599,15 +628,10 @@ module processor(halted, reset, clk);
 output reg halted;
 input reset, clk;
 
-processorCore core0(halt0, readSignal0, writeSignal0, writeVal0, memAddr0, reset0, clk, busy, readVal0, lineChanged0, lineChangedAddr0, core0);
-processorCore core1(halt1, readSignal1, writeSignal1, writeVal1, memAddr1, reset1, clk, busy, readVal1, lineChanged1, lineChangedAddr1, core1);
-cacheController mainControl(busy, memrnotw, memStrobe, readVal0, readVal1, lineChangedAddr0, lineChangedAddr1, lineChanged0, lineChanged1, memWriteVal, memAddr, readSignal0, writeSignal0, readSignal1, writeSignal1, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal, memDone);
-slowmem64 slowmem(memDone, memReadVal, memAddr, memWriteVal, memrnotw, memStrobe, clk);
-
 wire busy;
 wire halt0, halt1;
 wire readSignal0, writeSignal0, readSignal1, writeSignal1;
-wire `WORD writeVal0, writeVal1;
+wire `WORD writeVal0, writeVal1, memAddr0, memAddr1;
 wire `LINE readVal0, readVal1; 
 wire [13:0] lineChangedAddr0, lineChangedAddr1;
 wire memrnotw;
@@ -615,6 +639,11 @@ wire memDone;
 wire memStrobe;
 wire `LINE memAddr, memReadVal, memWriteVal;
 wire core0, core1;
+
+processorCore c0(halt0, readSignal0, writeSignal0, writeVal0, memAddr0, reset0, clk, busy, readVal0, lineChanged0, lineChangedAddr0, core0);
+processorCore c1(halt1, readSignal1, writeSignal1, writeVal1, memAddr1, reset1, clk, busy, readVal1, lineChanged1, lineChangedAddr1, core1);
+cacheController mainControl(busy, memrnotw, memStrobe, readVal0, readVal1, lineChangedAddr0, lineChangedAddr1, lineChanged0, lineChanged1, memWriteVal, memAddr, readSignal0, writeSignal0, readSignal1, writeSignal1, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal, memDone);
+slowmem64 slowmem(memDone, memReadVal, memAddr, memWriteVal, memrnotw, memStrobe, clk);
 
 endmodule
 
@@ -624,8 +653,9 @@ module testbench;
 	wire halted;
 	processor PE(halted, reset, clk);
 		initial begin
-		$dumpfile;
-		$dumpvars(1, PE.pc, PE.regfile[0], PE.regfile[1]);
+		// Andrew, you'll need to determine this
+		// $dumpfile;
+		// $dumpvars(1, PE.pc, PE.regfile[0], PE.regfile[1]);
 		#10 reset = 1;
 		#10 reset = 0;
 		while (!halted) begin
