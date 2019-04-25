@@ -497,7 +497,7 @@ endmodule
 
 // ***************************************** Cache Controller ***************************************
 
-module cacheController(busy, memrnotw, memstrobe, memcore0readVal, core1readVal, core0lineNumChanged, core1lineNumChanged, core0lineChangeSignal, core1lineChangedSignal, memWriteVal, memAddr, core0read, core0write, core1read, core1write, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal, memDone);
+module cacheController(busy, memrnotw, memstrobe, memcore0readVal, core1readVal, core0lineNumChanged, core1lineNumChanged, core0lineChangeSignal, core1lineChangedSignal, memWriteVal, memAddr, clk, core0read, core0write, core1read, core1write, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal, memDone);
 	output reg busy;
 
 	// Interface control lines with slowmem module
@@ -510,7 +510,7 @@ module cacheController(busy, memrnotw, memstrobe, memcore0readVal, core1readVal,
 	// Holds memory address for interface with slowmem
 	output reg `LINE memAddr;
 	// Control signals from slowmem, processor cores
-	input core0read, core0write, core1read, core1write, memDone;
+	input clk, core0read, core0write, core1read, core1write, memDone;
 	// Holds word values to be written to slowmem
 	input `WORD core0writeVal, core1writeVal;
 	// Holds line value read from slowmem
@@ -521,73 +521,75 @@ module cacheController(busy, memrnotw, memstrobe, memcore0readVal, core1readVal,
 	// Holds buffer val, so we can read current line in memory and just add specific word
 	reg `LINE bufWriteVal;
 
-	// Requesting core 0 read, no core 1 read
-	if(core0read && !core1read) begin
-		busy <= 1; 
-		// Get line address for interface with slowmem controller
-		memAddr <= core0addr/4;
-		memrnow2 <= 1;
-		// When done signal is high from slowmem, set values
-		always@(posedge memDone) begin 
-			core0readVal <= memReadVal;
-			busy <= 0;
+	always @(posedge clk) begin
+		// Requesting core 0 read, no core 1 read
+		if(core0read && !core1read) begin
+			busy <= 1; 
+			// Get line address for interface with slowmem controller
+			memAddr <= core0addr/4;
+			memrnow2 <= 1;
+			// When done signal is high from slowmem, set values
+			if(memDone) begin 
+				core0readVal <= memReadVal;
+				busy <= 0;
+			end
+			
+		end
+
+		// Requesting core 1 read, no core 0 read
+		else if(!core0read && core1read) begin
+			busy <= 1;
+			// Get line addres for interface with slowmem controller
+			memAddr <= core1addr/4;
+			memrnotw <= 1;
+			if(memDone) begin 
+				core1readVal <= memReadVal;
+				busy <= 0;
+			end
 		end
 		
-	end
+		// Requesting core 0 write, no core 1 write
+		else if(core0write && !core1write) begin
+			busy <= 1;
+			// Perform read operation first to get entire line
+			memAddr <= core0addr/4;
+			memrnotw <= 1;
+			// When read is finished, start write
+			if(memDone) begin
+				// Store read line in buffer
+				bufWriteVal <= memReadVal;
+				// Place word to be written in the index specified by memory address from core
+				memWriteVal[core0addr/4][(core0addr/4)%16] <=  core0writeVal;
+				memrnotw <= 0;
+				// Notify core 1 which line has been changed
+				core1lineNumChanged <= core0addr/4;
+				core1lineChanged <= 1;
+				busy <= 0;
+			end
+		end
 
-	// Requesting core 1 read, no core 0 read
-	else if(!core0read && core1read) begin
-		busy <= 1;
-		// Get line addres for interface with slowmem controller
-		memAddr <= core1addr/4;
-		memrnotw <= 1;
-		always@(posedge memDone) begin 
-			core1readVal <= memReadVal;
+		// Requesting core 1 write, no core 0 write
+		else if(!core0write && core1write) begin
+			busy <= 1;
+			memAddr <= core1addr/4;
+			memrnotw <= 1;
+			if(memDone) begin
+				// Store read line in buffer
+				bufWriteVal <= memReadVal;
+				// Place word to be written in the index specified by memory address from core
+				memWriteVal[core1addr/4][(core1addr/4)%16] <=  core1writeVal;
+				memrnotw <= 0;
+				// Notify core 0 which line has been changed
+				core0lineNumChanged <= core0addr/4;
+				core0lineChanged <= 1;
+				busy <= 0;
+			end
+		end
+
+		// Simultaneous read/write operation
+		else begin
 			busy <= 0;
 		end
-	end
-	
-	// Requesting core 0 write, no core 1 write
-	else if(core0write && !core1write) begin
-		busy <= 1;
-		// Perform read operation first to get entire line
-		memAddr <= core0addr/4;
-		memrnotw <= 1;
-		// When read is finished, start write
-		always@(posedge memDone) begin
-			// Store read line in buffer
-			bufWriteVal <= memReadVal;
-			// Place word to be written in the index specified by memory address from core
-			memWriteVal[core0addr/4][(core0addr/4)%16] <=  core0writeVal;
-			memrnotw <= 0;
-			// Notify core 1 which line has been changed
-			core1lineNumChanged <= core0addr/4;
-			core1lineChanged <= 1;
-			busy <= 0;
-		end
-	end
-
-	// Requesting core 1 write, no core 0 write
-	else if(!core0write && core1write) begin
-		busy <= 1;
-		memAddr <= core1addr/4;
-		memrnotw <= 1;
-		always@(posedge memDone) begin
-			// Store read line in buffer
-			bufWriteVal <= memReadVal;
-			// Place word to be written in the index specified by memory address from core
-			memWriteVal[core1addr/4][(core1addr/4)%16] <=  core1writeVal;
-			memrnotw <= 0;
-			// Notify core 0 which line has been changed
-			core0lineNumChanged <= core0addr/4;
-			core0lineChanged <= 1;
-			busy <= 0;
-		end
-	end
-
-	// Simultaneous read/write operation
-	else begin
-		busy <= 0;
 	end
 endmodule
 
@@ -599,8 +601,7 @@ input reset, clk;
 
 processorCore core0(halt0, readSignal0, writeSignal0, writeVal0, memAddr0, reset0, clk, busy, readVal0, lineChanged0, lineChangedAddr0, core0);
 processorCore core1(halt1, readSignal1, writeSignal1, writeVal1, memAddr1, reset1, clk, busy, readVal1, lineChanged1, lineChangedAddr1, core1);
-cacheController mainControlcacheController(busy, memrnotw, memStrobe, readVal0, readVal1, lineChangedAddr0, lineChangedAddr, lineChanged0, lineChanged1, memWriteVal, memAddr, readSignal0, writeSignal0, readSignal1, 
-											writeSignal1, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal, memDone);
+cacheController mainControl(busy, memrnotw, memStrobe, readVal0, readVal1, lineChangedAddr0, lineChangedAddr1, lineChanged0, lineChanged1, memWriteVal, memAddr, readSignal0, writeSignal0, readSignal1, writeSignal1, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal, memDone);
 slowmem64 slowmem(memDone, memReadVal, memAddr, memWriteVal, memrnotw, memStrobe, clk);
 
 wire busy;
@@ -615,6 +616,7 @@ wire memStrobe;
 wire `LINE memAddr, memReadVal, memWriteVal;
 wire core0, core1;
 
+endmodule
 
 module testbench;
 	reg reset = 0;
