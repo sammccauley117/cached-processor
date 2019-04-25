@@ -526,7 +526,7 @@ module processorCore(halt, readSignal, writeSignal, writeVal, memAddr, reset, cl
 endmodule
 
 // ***************************************** Cache Controller ***************************************
-module cacheController(busy, memrnotw, memstrobe, core0readVal, core1readVal, core0lineNumChanged, core1lineNumChanged, core0lineChangeSignal, core1lineChangedSignal, memWriteVal, memAddr, clk, core0read, core0write, core1read, core1write, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal, memDone);
+module cacheController(busy, memrnotw, memstrobe, core0readVal, core1readVal, core0lineNumChanged, core1lineNumChanged, core0lineChangedSignal, core1lineChangedSignal, memWriteVal, memAddr, clk, core0read, core0write, core1read, core1write, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal, memDone);
 	output reg busy;
 
 	// Interface control lines with slowmem module
@@ -535,7 +535,7 @@ module cacheController(busy, memrnotw, memstrobe, core0readVal, core1readVal, co
 	output reg `LINE core0readVal, core1readVal, memWriteVal;
 	// Contains number of line modified by write operation
 	output reg [13:0] core0lineNumChanged, core1lineNumChanged;
-	output reg core0lineChangeSignal, core1lineChangedSignal;
+	output reg core0lineChangedSignal, core1lineChangedSignal;
 	// Holds memory address for interface with slowmem
 	output reg `LINE memAddr;
 	// Control signals from slowmem, processor cores
@@ -545,7 +545,7 @@ module cacheController(busy, memrnotw, memstrobe, core0readVal, core1readVal, co
 	// Holds line value read from slowmem
 	input `LINE memReadVal;
 	// Holds address values from slowmem
-	input `LINE core0addr, core1addr;
+	input `WORD core0addr, core1addr;
 
 	// Holds buffer val, so we can read current line in memory and just add specific word
 	reg `LINE bufWriteVal;
@@ -556,7 +556,7 @@ module cacheController(busy, memrnotw, memstrobe, core0readVal, core1readVal, co
 			busy <= 1; 
 			// Get line address for interface with slowmem controller
 			memAddr <= core0addr/4;
-			memrnow2 <= 1;
+			memrnotw <= 1;
 			// When done signal is high from slowmem, set values
 			if(memDone) begin 
 				core0readVal <= memReadVal;
@@ -592,7 +592,7 @@ module cacheController(busy, memrnotw, memstrobe, core0readVal, core1readVal, co
 				memrnotw <= 0;
 				// Notify core 1 which line has been changed
 				core1lineNumChanged <= core0addr/4;
-				core1lineChanged <= 1;
+				core1lineChangedSignal <= 1;
 				busy <= 0;
 			end
 		end
@@ -610,7 +610,7 @@ module cacheController(busy, memrnotw, memstrobe, core0readVal, core1readVal, co
 				memrnotw <= 0;
 				// Notify core 0 which line has been changed
 				core0lineNumChanged <= core0addr/4;
-				core0lineChanged <= 1;
+				core0lineChangedSignal <= 1;
 				busy <= 0;
 			end
 		end
@@ -632,7 +632,7 @@ wire busy;
 wire halt0, halt1;
 wire readSignal0, writeSignal0, readSignal1, writeSignal1;
 wire `WORD writeVal0, writeVal1, memAddr0, memAddr1;
-wire `LINE readVal0, readVal1; 
+wire `LINE readVal0, readVal1;
 wire [13:0] lineChangedAddr0, lineChangedAddr1;
 wire memrnotw;
 wire memDone;
@@ -642,7 +642,7 @@ wire core0, core1;
 
 processorCore c0(halt0, readSignal0, writeSignal0, writeVal0, memAddr0, reset0, clk, busy, readVal0, lineChanged0, lineChangedAddr0, core0);
 processorCore c1(halt1, readSignal1, writeSignal1, writeVal1, memAddr1, reset1, clk, busy, readVal1, lineChanged1, lineChangedAddr1, core1);
-cacheController mainControl(busy, memrnotw, memStrobe, readVal0, readVal1, lineChangedAddr0, lineChangedAddr1, lineChanged0, lineChanged1, memWriteVal, memAddr, readSignal0, writeSignal0, readSignal1, writeSignal1, core0writeVal, core1writeVal, core0addr, core1addr, memReadVal, memDone);
+cacheController mainControl(busy, memrnotw, memStrobe, readVal0, readVal1, lineChangedAddr0, lineChangedAddr1, lineChanged0, lineChanged1, memWriteVal, memAddr, clk, readSignal0, writeSignal0, readSignal1, writeSignal1, writeVal0, writeVal1, memAddr0, memAddr1, memReadVal, memDone);
 slowmem64 slowmem(memDone, memReadVal, memAddr, memWriteVal, memrnotw, memStrobe, clk);
 
 endmodule
