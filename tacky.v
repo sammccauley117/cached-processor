@@ -1,3 +1,5 @@
+//Team48
+
 `define WORD	   [15:0] // Standard word length
 `define OPFIELD1 [15:11] // Typical opcode field
 `define OPFIELD2 [7:3] // VLIW 2nd Op location
@@ -651,7 +653,7 @@ module testbench;
 	reg reset = 0;
 	reg clk = 0;
 	wire halted;
-	processor PE(halted, reset, clk);
+	processor processor(halted, reset, clk);
 		initial begin
 		// Andrew, you'll need to determine this
 		// $dumpfile;
@@ -836,3 +838,9 @@ module f2i(i, f);
 	assign ui = {1'b1, f `FFRAC, 16'b0} >> ((128+22) - f `FEXP);
 	assign i = (tiny ? 0 : (big ? 32767 : (f `FSIGN ? (-ui) : ui)));
 endmodule
+
+module testbench;
+reg reset = 0;
+reg clk = 0;
+wire halted;
+
