@@ -339,9 +339,19 @@ module processorCore(halt, readSignal, writeSignal, writeVal, memAddr, reset, cl
 							if(cache[accVal1/4%16]`LINENUM == accVal1/4 && !cache[accVal1/4%16]`DIRTY) begin 
 								// Use the cache to execute the operation
 								if(op1 == `OPlf) begin 
-									partialResult1 <= {1'b1, cache[accVal1/4%16]`LINEDATA};
+									case(accVal1%4)
+										0: begin partialResult1 <= {1'b1, cache[accVal1/4%16][15:0]}; end
+										1: begin partialResult1 <= {1'b1, cache[accVal1/4%16][31:16]}; end
+										2: begin partialResult1 <= {1'b1, cache[accVal1/4%16][47:32]}; end
+										3: begin partialResult1 <= {1'b1, cache[accVal1/4%16][63:48]}; end
+									endcase
 								end else begin 
-									partialResult1 <= {1'b0, cache[accVal1/4%16]`LINEDATA};
+									case(accVal1%4)
+										0: begin partialResult1 <= {1'b0, cache[accVal1/4%16][15:0]}; end
+										1: begin partialResult1 <= {1'b0, cache[accVal1/4%16][31:16]}; end
+										2: begin partialResult1 <= {1'b0, cache[accVal1/4%16][47:32]}; end
+										3: begin partialResult1 <= {1'b0, cache[accVal1/4%16][63:48]}; end
+									endcase
 								end
 							// b) Cache miss: request data from slow memory
 							end else begin 
@@ -391,9 +401,19 @@ module processorCore(halt, readSignal, writeSignal, writeVal, memAddr, reset, cl
 							if(cache[accVal2/4%16]`LINENUM == accVal2/4 && !cache[accVal2/4%16]`DIRTY) begin 
 								// Use the cache to execute the operation
 								if(op2 == `OPlf) begin 
-									partialResult2 <= {1'b1, cache[accVal2/4%16]`LINEDATA};
+									case(accVal2%4)
+										0: begin partialResult2 <= {1'b1, cache[accVal2/4%16][15:0]}; end
+										1: begin partialResult2 <= {1'b1, cache[accVal2/4%16][31:16]}; end
+										2: begin partialResult2 <= {1'b1, cache[accVal2/4%16][47:32]}; end
+										3: begin partialResult2 <= {1'b1, cache[accVal2/4%16][63:48]}; end
+									endcase
 								end else begin 
-									partialResult2 <= {1'b0, cache[accVal2/4%16]`LINEDATA};
+									case(accVal2%4)
+										0: begin partialResult2 <= {1'b0, cache[accVal2/4%16][15:0]}; end
+										1: begin partialResult2 <= {1'b0, cache[accVal2/4%16][31:16]}; end
+										2: begin partialResult2 <= {1'b0, cache[accVal2/4%16][47:32]}; end
+										3: begin partialResult2 <= {1'b0, cache[accVal2/4%16][63:48]}; end
+									endcase
 								end
 							// b) Cache miss: request data from slow memory
 							end else begin 
