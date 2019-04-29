@@ -1,1 +1,7 @@
 //create an assembly language code
+
+@0000
+//b800	// (sys 0x00) halts on line 1
+0a0b	// (add $2,	add	$3)
+b800	// (sys 0x00), should halt but doesn't
+7c7d	// (sub $4,	sub $5)
