@@ -655,7 +655,7 @@ module cacheController(busy, memrnotw, memstrobe, core0readVal, core1readVal, co
 		end
 
 		// Simultaneous read operation
-		if(core0read && core1read)
+		if(core0read && core1read) begin
 			// If there isn't an ongoing read operation, then execute core0 read
 			if (!pendingOp) begin
 				busy <= 1;
@@ -670,7 +670,7 @@ module cacheController(busy, memrnotw, memstrobe, core0readVal, core1readVal, co
 					pendingOp <= 1;
 					memstrobe <= 0;
 				end
-			end
+            end
 			// Executes core1 read with stored address
 			else begin
 				// Load slowmem interface with stored address
@@ -731,6 +731,7 @@ module cacheController(busy, memrnotw, memstrobe, core0readVal, core1readVal, co
 					#2 core0lineChangedSignal <= 0;
 					pendingOp <= 0;
 					memstrobe <= 0;
+                end
 			end
 		end
 	end
@@ -950,9 +951,3 @@ module f2i(i, f);
 	assign ui = {1'b1, f `FFRAC, 16'b0} >> ((128+22) - f `FEXP);
 	assign i = (tiny ? 0 : (big ? 32767 : (f `FSIGN ? (-ui) : ui)));
 endmodule
-
-module testbench;
-reg reset = 0;
-reg clk = 0;
-wire halted;
-
